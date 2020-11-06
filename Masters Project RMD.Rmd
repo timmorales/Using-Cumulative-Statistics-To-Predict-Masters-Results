@@ -1,0 +1,731 @@
+---
+title: "Master's Project"
+author: "Tim Morales"
+date: "4/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Loading data and clean initial PGA data
+```{r}
+library(tidyr)
+library(caret)
+library(stringr)
+library(dplyr)
+set.seed(23)
+pga<-read.csv('/Users/timmorales/Desktop/STAT 6302/pga-tour-20102018-data/2019_data.csv',stringsAsFactors=FALSE)
+masters<-read.csv("/Users/timmorales/Desktop/STAT 6302/Masters2019.csv")
+
+#make a variable to see if the person did or did not get cut
+masters$cut<- ifelse(is.na(masters$Round.3)==T,1,0)
+
+#keep only players that played in masters 
+player.names<-levels(masters$Player.Name)
+head(pga)
+pga<-pga[pga$Player.Name %in% player.names==TRUE,]
+
+#keep only dates prior to masters 
+dates<-c("2019-01-27","2019-02-03","2019-02-10","2019-02-17","2019-02-24","2019-03-03"
+        ,"2019-03-10","2019-03-17","2019-03-24","2019-03-31","2019-04-07")
+
+#if i wanna do just the week before the masters 
+premasters<-"2019-04-07"
+
+#keep only those who actually played prior to the masters 
+pga$Player.Name<-as.character(pga$Player.Name)
+pga<-pga[pga$Date %in% premasters==TRUE,]
+
+#reshape and drop "stat and date"
+pga<-pga[,-c(2,3)]
+pga.W <- spread(pga, Variable, Value)
+
+#remove those who did not play prior to the masters 
+pga.W<- pga.W[which(!is.na(pga.W$`Total Driving - (EVENTS)`)),]
+```
+
+Creat main full dataset for cleaning
+```{r}
+set.seed(23)
+#keep only earnings, finish, cut and final score 
+masters<-masters[,-c(3:6)]
+
+#keep only the names of people with stats availible
+#keep only those who actually played in the masters 
+masters.results<-masters[as.character(masters$Player.Name) %in% pga.W$Player.Name==TRUE,]
+
+#FULL DATASET MERGE
+#making all into one dataset for evaluation 
+masters.full<-merge(pga.W,masters.results, by='Player.Name')
+```
+
+Start cleaning the full dataset.
+
+fill NA with DNP and change E to 0, except for earnings those recieved $10,000 for qualifying
+```{r}
+#Replacing NA with 10,000
+
+masters.full$Earnings = as.numeric(gsub('[$,]', '', masters.full$Earnings))
+masters.full$Earnings[is.na(masters.full$Earnings)==T]<-10000
+
+#make blanks 0 and missing to "DNP"
+for (j in 2:1484){
+  for (i in 1:65){
+    if (is.na(masters.full[i,j])==T){
+      masters.full[i,j]<-'DNP'
+    }else if ((masters.full[i,j]=="")==T){
+      masters.full[i,j]<-"0"
+      }else{
+        masters.full[i,j]<-masters.full[i,j]
+        }
+    }
+}
+
+#replacing E with 0
+for (j in 2:1484){
+  for (i in 1:65){
+    if ((masters.full[i,j])=='E'){
+      masters.full[i,j]<-'0'
+    }
+  }
+}
+```
+
+Removing repeated "rounds" and other variables with same information that are repeated. 
+
+```{r}
+
+#########################
+#REMOVING REPEATED COLUMNS
+##########################
+
+#removing all "rounds" columns 
+column.names<-colnames(masters.full)
+masters.full<-masters.full[,grepl( "(ROUNDS)" , names( masters.full ) )==F]
+
+#do the same for total holes statistic
+total.holes<-masters.full$`Average Approach Shot Distance - (TOTAL HOLES)`
+masters.full<-masters.full[,grepl( "(TOTAL HOLES)" , names( masters.full ) )==F]
+
+#do the same thing for events 
+events<-masters.full$`Consecutive Fairways Hit - (EVENTS)`
+masters.full<-masters.full[,grepl( "(EVENTS)" , names( masters.full ) )==F]
+
+#remove FedEx Cup Variables Since not everyone plays in fedex cup
+masters.full<-masters.full[,grepl( "(FedEx)" , names( masters.full ) )==F]
+
+#remove tournament denoting var
+masters.full<-masters.full[,grepl( "(TOURNAMENT)" , names( masters.full ) )==F]
+
+#remove total stroke
+masters.full<-masters.full[,grepl( "(TOTAL STROKE)" , names( masters.full ) )==F]
+
+#tournament number 
+masters.full<-masters.full[,grepl( "(YEAR/TOURN#)" , names( masters.full ) )==F]
+
+#tourn/course variable 
+masters.full<-masters.full[,grepl( "(TOURN/COURSE)" , names( masters.full ) )==F]
+
+#things relating to the course not the player
+masters.full<-masters.full[,grepl( "(COURSE)" , names( masters.full ) )==F]
+
+#number of holes variables repeated
+masters.full<-masters.full[,grepl( "# OF HOLES" , names( masters.full ) )==F]
+```
+
+Removing characters from variables that will be numeric
+```{r}
+test<-masters.full
+masters.full<-test
+#which are height variables need to remove the ' and "
+height.var<-which(grepl( "'",masters.full)==T)
+for (i in height.var){
+masters.full[,i]<-gsub('[\']', '.', masters.full[,i])
+}
+
+for (i in height.var){
+  masters.full[,i]<-(gsub('[\"]', '',masters.full[,i]))
+}
+
+for (i in height.var){
+  masters.full[,i]<-(gsub('. ', '.',masters.full[,i]))
+}
+
+```
+
+Need to evalue the variables with "DNP" and see what DNP or the missing variables reprensented then drop those which cannot be remidied as imputation is not fair in this sense. 
+```{r}
+
+dnp.var<-which(grepl( "DNP",masters.full)==T)
+#THESE ARE THE ONES THAT NEED TO BE DROPPED 
+drop.dnp.var<-dnp.var[c(16,19,22,25,28,33,35,37,39,42,45,47,50,53,59,59,60,61,62,63:68,70,73:78,79,82,85,88,94,95,96,98,99,100,104,110,111,112,114,117,118,121,123,127,129,131)]
+#we now remove those from the dataset
+masters.full<-masters.full[,-c(drop.dnp.var)]
+
+#we now replace DNP with 0 
+for (j in 2:899){
+  for (i in 1:65){
+    if ((masters.full[i,j])=='DNP'){
+      masters.full[i,j]<-'0'
+    }
+  }
+}
+#doesnt work for all but those are distance variables and therefore should be dropped when missing as 0 is not suitable 
+cols<-colnames(masters.full)
+drop.dist<-colnames(masters.full)[colSums(is.na(masters.full)) > 0]
+masters.full<-masters.full[,colSums(is.na(masters.full))== 0]
+```
+
+Make the player names the index
+```{r}
+row.names(masters.full)<-masters.full$Player.Name
+```
+
+I now need to go through all of the variables 1 by 1.I am dropping variables that are either not fair to account for everyone due to some people not having registered statistics on them, or variables that are explained by others within the data, such as attempts and successes when % success is availible.
+
+I store these variable names in a vector if curious as I will not write each indiviaully cause itll be hundreds. 
+
+
+```{r}
+drop.col.index<-c(1,3,4,7,8,12,15,17,16,19,20,23,24,27,28,31,32,35,37,39,40,43,47,48,61,62,81,82,89,90,93,97,100,104,108,112,116,120,124,128,131,135,139,143,149,152,156,160,164,171,175,179,183,187,188,190,191,193,194,196,198,202,203,204,208,209,211,213,214,215,217,219,220,222,223,224,225226,229,230,232,233,234,235,236,245,246,253,255,257,260,262,264,266,268,270,272,274,276,278,280,281,283,284,285,286,287,288,289,295,296,297,301,305,306,312,313,320,321,325,327,331,332,334,335,337,338,339,341,344,345,346,347,348,349,352,353,356,357,360,361,364,365,368,369,372,373,376,377,380,381,384,385,388,389,392,393,396,397,398,405,408,407,411,418,428,430,431,433,436,439,442,445,448,451,454,457,460,463,465,467,468,470,471,473,474,476,478,479,481,482,484,485,488,490,494,495,497,498,499,503,507,508,512,513,515,516,530,531,535,537,539,542,544,545,546,548,550,551,554,555,562,564,566,569,570,573,576,577,582,585,586,588,591,594,596,597,600,601,604,606,607,607,609,610,612,613,614,616,619,620,623,624,627,628,631,632,635,636,639,640,643,644,647,648,652,655,657,658,661,663,665,666,668,669,671,672,674,675,677,678,680,681,682,683,684,686,687,689,690,692,693,695,696,698,699,701,702,704,705,707,708,710,711,713,714,716,717,718,723,725,726,727,730,732,734,737,739,740,743,744,746,748,750,751,752,755,757,758,760,761,763,764,770,771,773,775,777,780,785,784,787,787,788,790,793,794,796,797,799,800,802,803,805,806,810,812,814,816,829,830,834,835,844,847,849,853,855,856,858,860,862,863,865:878,883,886)
+money.var<-c(552,553,603,892)
+need.to.be.factor<-c(558)
+#vector of all col names pre drop
+pre.drop.names<-colnames(masters.full)
+
+#vector of all columns to be dropped. 
+columns.manually.dropped<-pre.drop.names[drop.col.index]
+
+#removing the $ and , in money vars
+for (i in money.var){
+masters.full[,i]<- as.numeric(gsub('[$,]', '', masters.full[,i]))
+masters.full[,i]<- as.numeric(gsub('[$,,]', '', masters.full[,i]))
+}
+
+#make our final dataset, drop all vars selected
+masters.full$`Official World Golf Ranking - (COUNTRY)`<-as.factor(masters.full$`Official World Golf Ranking - (COUNTRY)`)
+masters.final<-masters.full[,-c(drop.col.index)]
+
+#the missing are produced to variables which can and should've been removed prior 
+for (i in 1:514){
+masters.final[,i]<- as.numeric(masters.final[,i])
+}
+masters.final<-masters.final[,colSums(is.na(masters.final))== 0]
+```
+
+With out final data set, we now must adjust the column/variables names and remove all issue characters.
+```{r}
+library(ggplot2)
+#in order to do anaylsis we need to fix column names 
+test<-masters.final
+masters.final<-test
+names(masters.final)<-str_replace_all(names(masters.final), c(" " = "" ,
+                                                          "," = "" ,
+                                                          "'" ="",
+                                                          "[()]"="",
+                                                          "-"=".",
+                                                      "[%]"="Percentage",
+                                                      "[#]"="Number of.",
+                                                      "[>]"="GT",
+                                                      "[<]"="LT",
+                                                      "[=]"="EQ"))
+                                    
+                                                              
+#column names of final dataset
+final.col.names<-colnames(masters.final)
+```
+
+It now becomes time to drop any near zero variance variables in the data set, of which there are none. 
+```{r}
+nearZeroVar(masters.final)
+```
+
+Looking at which variables are most correlated without controling for any others. 
+```{r}
+#make log earnings as well 
+masters.final$logEarnings<-log(masters.final$Earnings)
+
+#setting up to see which variables most correlated to earnings and log earnings 
+correlations<-rep(0,502)
+for (i in 1:502){
+  correlations[i]<-cor(masters.final$Earnings,masters.final[,i])
+  
+}
+logcorrelations<-rep(0,502)
+for (i in 1:502){
+  logcorrelations[i]<-cor(masters.final$logEarnings,masters.final[,i])
+  
+}
+
+cutcorrelations<-rep(0,502)
+for (i in 1:502){
+  cutcorrelations[i]<-cor(masters.final$cut,masters.final[,i])
+  
+}
+
+#summary of correlations 
+summary(correlations)
+summary(logcorrelations)
+#the most positively correlated varaible
+final.col.names[which(correlations==max(correlations))]
+final.col.names[which(logcorrelations==max(logcorrelations))]
+final.col.names[which(logcorrelations==max(cutcorrelations))]
+#plotting 
+ggplot(masters.final,
+       aes_string(x="Back9ScoringAverage.AVG",
+                  y="logEarnings"))+
+         geom_point()
+
+#look at most negatively correlated
+final.col.names[which(correlations==min(correlations))]
+final.col.names[which(logcorrelations==min(logcorrelations))]
+ggplot(masters.final,
+       aes_string(x="GreensorFringeinRegulation.Percentage",
+                  y="logEarnings"))+
+         geom_point()+
+  geom_smooth(method='glm')
+```
+
+Were gonna do a pair-wise correlation cut-off to remove variables that are extremely correlated with others. Pairwise of .99
+
+The next step is to work with some of the correlation in the variables in the data, we are going to drop any variables that have a correlation over three cut points .7, .80 and .90 with other variables.
+https://www.rdocumentation.org/packages/caret/versions/6.0-86/topics/findCorrelation 
+
+```{r}
+masters.final$Finish<-as.numeric(ifelse(masters.full$Finish=='CUT',63,masters.full$Finish))
+masters.final$Final.Total<-ifelse(masters.full$Final.Total<200,300,masters.full$Final.Total)
+```
+
+```{r}
+#lets try and remove all variables that are extremely correlated and only keep on 
+library(corrplot)
+set.seed(23)
+corr.masters<-cor(masters.final[,-c(502:508)])
+correlation.7<-findCorrelation(corr.masters,cutoff = .7)
+correlation.80<-findCorrelation(corr.masters,cutoff = .8)
+correlation.85<-findCorrelation(corr.masters,cutoff = .85)
+m.corr.7<-masters.final[,-c(correlation.7)]
+m.corr.8<-masters.final[,-c(correlation.80)]
+m.corr.85<-masters.final[,-c(correlation.85)]
+```
+
+We now run PLSR on the correlation removed and full datasets, using 10 fold CV to optimize the number of componets through RMSEP.
+
+```{r}
+#running plsr
+#full
+set.seed(23)
+tcontrol <- trainControl(method="LOOCV")
+n<-seq(1,15,1)
+pls.full<-train(y= masters.final$logEarnings,
+                 x = scale(masters.final[,-c(503:508)]),
+                 method = 'pls', 
+                 tuneGrid = expand.grid(ncomp=n),
+                  trainControl=tcontrol
+               )
+pls.full$bestTune$ncomp
+plot(pls.full)
+
+#.7
+tcontrol <- trainControl(method="LOOCV")
+n<-seq(1,15,1)
+pls.7<-train(y= masters.final$logEarnings,
+                 x = scale(m.corr.7[,-c(253:258)]),
+                 method = 'pls', 
+                 tuneGrid = expand.grid(ncomp=n),
+                  trainControl=tcontrol
+               )
+pls.7$bestTune$ncomp
+#gives optimal tune graph
+plot(pls.7)
+
+#.8
+tcontrol <- trainControl(method="LOOCV")
+n<-seq(1,15,1)
+pls.8<-train(y= masters.final$logEarnings,
+                 x = scale(m.corr.8[,-c(312:317)]),
+                 method = 'pls', 
+                 tuneGrid = expand.grid(ncomp=n),
+                  trainControl=tcontrol
+               )
+pls.8$bestTune$ncomp
+plot(pls.8)
+
+#.85
+tcontrol <- trainControl(method="LOOCV")
+n<-seq(1,15,1)
+pls.85<-train(y= masters.final$logEarnings,
+                 x = scale(m.corr.85[,-c(355:360)]),
+                 method = 'pls', 
+                 tuneGrid = expand.grid(ncomp=n),
+                  trainControl=tcontrol
+               )
+pls.85$bestTune$ncomp
+plot(pls.85)
+```
+
+#plotting all PLS and Predicting
+```{r}
+###########
+#Full datasets#
+############
+#partial least squares
+library(pls)
+
+#getting fitted values
+pls.pred.full<-predict(pls.full,ncomp = pls.full$bestTune)
+
+#prediction and plotting
+#making a df of rankings and plotting
+pls.full.results<-data.frame("PredEarnings" = pls.pred.full, "Finishtopar"=masters.final$Final.Total)
+pls.full.results<-pls.full.results %>% mutate(Prediction =  dense_rank(desc(PredEarnings)))
+#get the ordered finished 
+pls.full.results$Finish<-rank((pls.full.results$Finishtopar),ties.method="min")
+
+#plotting results 
+with(pls.full.results,plot(Finish,Prediction))
+ggplot(pls.full.results, aes(x = Finish, y=Prediction))+
+  geom_point()+
+  geom_abline(intercept = 0, color="yellow",ltw=5)+
+  ggtitle("PLSR Full Data")
+  
+RMSE(pls.full.results$Prediction,pls.full.results$Finish)
+```
+
+PLSR on correlation removed.  
+```{r}
+#############################
+#CORRELATION REMOVED DATASETS#
+#############################
+#####.7########
+#partial least squares
+######################
+#getting fitted values
+pls.pred.7<-predict(pls.7,ncomp = pls.7$bestTune)
+
+#prediction and plotting
+#making a df of rankings and plotting
+pls.7.results<-data.frame("PredEarnings" = pls.pred.7, "Finishtopar"=masters.final$Final.Total)
+pls.7.results<-pls.7.results %>% mutate(Prediction =  dense_rank(desc(PredEarnings)))
+#get the ordered finished 
+pls.7.results$Finish<-rank((pls.7.results$Finishtopar),ties.method="min")
+
+#plotting results 
+with(pls.7.results,plot(Finish,Prediction))
+ggplot(pls.7.results, aes(x = Finish, y=Prediction))+
+  geom_point()+
+  geom_abline(intercept = 0, color="green",ltw=5)+
+  ggtitle("PLSR Corr LT .7")
+  
+RMSE(pls.7.results$Prediction,pls.7.results$Finish)
+```
+
+do for .8
+```{r}
+#####.8########
+######################
+#getting fitted values
+pls.pred.8<-predict(pls.8,ncomp = pls.8$bestTune)
+
+#prediction and plotting
+#making a df of rankings and plotting
+pls.8.results<-data.frame("PredEarnings" = pls.pred.8, "Finishtopar"=masters.final$Final.Total)
+pls.8.results<-pls.8.results %>% mutate(Prediction =  dense_rank(desc(PredEarnings)))
+#get the ordered finished 
+pls.8.results$Finish<-rank((pls.8.results$Finishtopar),ties.method="min")
+
+#plotting results 
+with(pls.8.results,plot(Finish,Prediction))
+ggplot(pls.8.results, aes(x = Finish, y=Prediction))+
+  geom_point()+
+  geom_abline(intercept = 0, color="green")+
+  ggtitle("PLSR Corr LT .8 Data")
+  
+RMSE(pls.8.results$Prediction,pls.8.results$Finish)
+
+vimp<-varImp(pls.8)
+vimp$importance
+vimp$importance$variable<-as.factor(rownames(vimp$importance))
+plot(varImp(pls.8),top=15, main="Variable Importance PLSR 0.8 Cutoff")
+
+```
+
+do for .85
+```{r}
+#####.85########
+
+######################
+#getting fitted values
+pls.pred.85<-predict(pls.85,ncomp = pls.85$bestTune)
+
+#prediction and plotting
+#making a df of rankings and plotting
+pls.85.results<-data.frame("PredEarnings" = pls.pred.85, "Finishtopar"=masters.final$Final.Total)
+pls.85.results<-pls.85.results %>% mutate(Prediction =  dense_rank(desc(PredEarnings)))
+#get the ordered finished 
+pls.85.results$Finish<-rank((pls.85.results$Finishtopar),ties.method="min")
+
+#plotting results 
+with(pls.85.results,plot(Finish,Prediction))
+ggplot(pls.85.results, aes(x = Finish, y=Prediction))+
+  geom_point()+
+  geom_abline(intercept = 0, color="yellow",ltw=5)+
+  ggtitle("PLSR Corr LT .85 Data")
+  
+RMSE(pls.85.results$Prediction,pls.85.results$Finish)
+```
+#PLSR webpage
+https://cran.r-project.org/web/packages/pls/vignettes/pls-manual.pdf
+
+Since the results from the PLSR we're not great, we continue with PCA and regression froms off of that. 
+
+Full dataset.
+```{r}
+###################
+###FULL DATA SET###
+###################
+library(factoextra)
+#making principle components
+masters.full.pca<-prcomp(masters.final[,-c(503:508)],center = T,scale=T)
+#checking scree
+fviz_eig(masters.full.pca, main = "Scree for PCA of Full Data")
+```
+
+Now for the correlation reduced datasets.
+```{r}
+#making principle components
+pca.7<-prcomp(m.corr.7[,-c(253:258)],center = T,scale=T)
+#checking scree
+fviz_eig(pca.7, main = "Scree for PCA of Corr Less Than .7")
+```
+
+PCA .8
+```{r}
+#making principle components
+pca.8<-prcomp(m.corr.8[,-c(312:317)],center = T,scale=T)
+#checking scree
+fviz_eig(pca.8, main = "Scree for PCA of Corr Less Than .8")
+```
+
+PCA .85
+```{r}
+pca.85<-prcomp(m.corr.85[,-c(355:360)],center = T,scale=T)
+#checking scree
+fviz_eig(pca.85, main = "Scree for PCA of Corr Less Than .85")
+```
+
+Run the LASSO 
+
+First for the .7
+```{r}
+set.seed(23)
+tcontrol <- trainControl(method="LOOCV")
+grid <- 10^seq(10, -2, length=100)
+lasso.7<-train(y= m.corr.7$logEarnings,
+                 x = pca.7$x,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 1, lambda = grid),
+                  trainControl=tcontrol
+               )
+lasso.7$bestTune
+opt.lasso.7<-lasso.7$finalModel
+coef(opt.lasso.7,alpha=lasso.7$bestTune$alpha,s=lasso.7$bestTune$lambda)
+lasso.pred.7<-predict(lasso.7,alpha=lasso.7$bestTune$alpha,s=lasso.7$bestTune$lambda,pca.7$x)
+#our results 
+plot(m.corr.7$logEarnings,lasso.pred.7)
+RMSE(lasso.pred.7,m.corr.7[,256])
+lasso.pred.7
+lasso.7$bestTune$lambda
+
+#making a df of rankings and plotting
+#ranking our predictions and plotting with the actual finishes
+lasso.7.results<-data.frame("PredEarnings" = lasso.pred.7, "Finishtopar"=m.corr.7$Final.Total)
+lasso.7.results<-lasso.7.results %>% mutate(Prediction =  dense_rank(desc(PredEarnings)))
+#get the ordered finished 
+lasso.7.results$Finish<-rank((lasso.7.results$Finishtopar),ties.method="min")
+
+#plotting results 
+with(lasso.7.results,plot(Finish,Prediction))
+ggplot(lasso.7.results, aes(x = Finish, y=Prediction))+
+  geom_point()+
+  geom_abline(intercept = 0, color="Green",ltw=5)+
+  ggtitle("Projected Finish Against Observed")
+  
+RMSE(lasso.7.results$Prediction,lasso.7.results$Finish)
+```
+
+
+For the .8
+```{r}
+set.seed(23)
+tcontrol <- trainControl(method="LOOCV")
+grid <- 10^seq(10, -2, length=100)
+lasso.8<-train(y= m.corr.8$logEarnings,
+                 x = pca.8$x,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 1, lambda = grid),
+                  trainControl=tcontrol
+               )
+opt.lasso.8<-lasso.8$finalModel
+coef(opt.lasso.8,alpha=lasso.8$bestTune$alpha,s=lasso.8$bestTune$lambda)
+lasso.pred.8<-predict(lasso.8,alpha=lasso.8$bestTune$alpha,s=lasso.8$bestTune$lambda,pca.8$x)
+
+plot(m.corr.8$logEarnings,lasso.pred.8)
+RMSE(lasso.pred.8,m.corr.8$logEarnings)
+
+lasso.8$bestTune$lambda
+#making a df of rankings and plotting
+#ranking our predictions and plotting with the actual finishes
+lasso.8.results<-data.frame("PredEarnings" = lasso.pred.8, "Finishtopar"=m.corr.8$Final.Total)
+lasso.8.results<-lasso.8.results %>% mutate(Prediction =  dense_rank(desc(PredEarnings)))
+#get the ordered finished 
+lasso.8.results$Finish<-rank((lasso.8.results$Finishtopar),ties.method="min")
+
+
+#plotting results 
+with(lasso.8.results,plot(Finish,Prediction))
+ggplot(lasso.8.results, aes(x = Finish, y=Prediction))+
+  geom_point()+
+  geom_abline(intercept = 0, color="Green",ltw=5)+
+  ggtitle("Projected Finish Against Observed")
+  
+RMSE(lasso.8.results$Prediction,lasso.8.results$Finish)
+```
+
+For the under corr .85
+```{r}
+set.seed(23)
+tcontrol <- trainControl(method="LOOCV")
+grid <- 10^seq(10, -2, length=100)
+lasso.85<-train(y= m.corr.85$logEarnings,
+                 x = pca.85$x,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 1, lambda = grid),
+                  trainControl=tcontrol
+               )
+opt.lasso.85<-lasso.85$finalModel
+coef(opt.lasso.85,alpha=lasso.85$bestTune$alpha,s=lasso.85$bestTune$lambda)
+lasso.pred.85<-predict(lasso.85,alpha=lasso.85$bestTune$alpha,s=lasso.85$bestTune$lambda,pca.85$x)
+
+#plotting to see
+plot(m.corr.85$logEarnings,lasso.pred.85)
+RMSE((lasso.pred.85),(m.corr.85$logEarnings))
+lasso.85$bestTune$lambda
+#making a df of rankings and plotting
+#ranking our predictions and plotting with the actual finishes
+
+lasso.85.results<-data.frame("PredEarnings" = lasso.pred.85, "Finishtopar"=m.corr.85$Final.Total)
+lasso.85.results<-lasso.85.results %>% mutate(Prediction =  dense_rank(desc(PredEarnings)))
+#get the ordered finished 
+lasso.85.results$Finish<-rank((lasso.85.results$Finishtopar),ties.method="min")
+
+#plotting results 
+with(lasso.85.results,plot(Finish,Prediction))
+ggplot(lasso.85.results, aes(x = Finish, y=Prediction))+
+  geom_point()+
+  geom_abline(intercept = 0, color="Green",ltw=5)+
+  ggtitle("Projected Finish Against Observed Lasso.85")
+  
+RMSE(lasso.85.results$Prediction,lasso.85.results$Finish)
+
+```
+
+For the full data with pca 
+```{r}
+set.seed(23)
+tcontrol <- trainControl(method="LOOCV")
+grid <- 10^seq(10, -2, length=100)
+lasso.full<-train(y= masters.final$logEarnings,
+                 x = masters.full.pca$x,
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 1, lambda = grid),
+                  trainControl=tcontrol
+               )
+opt.lasso.full<-lasso.full$finalModel
+coef(opt.lasso.full,alpha=lasso.full$bestTune$alpha,s=lasso.full$bestTune$lambda)
+lasso.pred.full<-predict(lasso.full,alpha=lasso.full$bestTune$alpha,s=lasso.full$bestTune$lambda,masters.full.pca$x)
+lasso.full$bestTune$lambda
+#plotting general results 
+plot(masters.final$logEarnings,lasso.pred.full)
+cat("RMSE of Log Earnings Full PCA",RMSE(lasso.pred.full,masters.final$logEarnings))
+
+#making a df of rankings and plotting
+#ranking our predictions and plotting with the actual finishes
+
+lasso.full.results<-data.frame("PredEarnings" = lasso.pred.full, "Finishtopar"=masters.final$Final.Total)
+lasso.full.results<-lasso.full.results %>% mutate(Prediction =  dense_rank(desc(PredEarnings)))
+#get the ordered finished 
+lasso.full.results$Finish<-rank((lasso.full.results$Finishtopar),ties.method="min")
+
+#plotting results 
+with(lasso.full.results,plot(Finish,Prediction))
+ggplot(lasso.full.results, aes(x = Finish, y=Prediction))+
+  geom_point()+
+  geom_abline(intercept = 0, color="Green",ltw=5)+
+  ggtitle("Projected Finish Against Observed")
+  
+RMSE(lasso.full.results$Prediction,lasso.full.results$Finish)
+
+```
+
+LASSO on full data no pca
+```{r}
+set.seed(23)
+tcontrol <- trainControl(method="LOOCV")
+grid <- 10^seq(10, -2, length=100)
+lasso.full.nopca<-train(y= masters.final$logEarnings,
+                 x = scale(masters.final[,-c(502:508)]),
+                 method = 'glmnet', 
+                 tuneGrid = expand.grid(alpha = 1, lambda = grid),
+                  trainControl=tcontrol
+               )
+opt.lasso.full.nopca<-lasso.full.nopca$finalModel
+coef(opt.lasso.full.nopca,alpha=lasso.full.nopca$bestTune$alpha,s=lasso.full.nopca$bestTune$lambda)
+lasso.pred.full.nopca<-predict(lasso.full.nopca,alpha=lasso.full.nopca$bestTune$alpha,s=lasso.full.nopca$bestTune$lambda, as.matrix(masters.final[,-c(502:508)]))
+
+plot(masters.final[,508],lasso.pred.full.nopca)
+RMSE(lasso.pred.full.nopca,masters.final[,508])
+lasso.full.nopca$bestTune$lambda
+#making a df of rankings and plotting
+#ranking our predictions and plotting with the actual finishes
+lasso.full.nopca.results<-data.frame("PredEarnings" = lasso.pred.full.nopca, "Finishtopar"=m.corr.8$Final.Total)
+lasso.full.nopca.results<-lasso.full.nopca.results %>% mutate(Prediction =  dense_rank(desc(PredEarnings)))
+#get the ordered finished 
+lasso.full.nopca.results$Finish<-rank((lasso.full.nopca.results$Finishtopar),ties.method="min")
+
+#plotting results 
+with(lasso.full.nopca.results,plot(Finish,Prediction))
+ggplot(lasso.full.nopca.results, aes(x = Finish, y=Prediction))+
+  geom_point()+
+  geom_abline(intercept = 0, color="Green",ltw=5)+
+  ggtitle("Projected Finish Against Observed")
+
+RMSE(lasso.full.nopca.results$Prediction,lasso.full.nopca.results$Finish)
+
+
+plot(varImp(lasso.full.nopca),top=10)
+```
+
+```{r}
+#using resamples for difference 
+resamples<-resamples(list(Lasso.85 = lasso.85,
+                      Lasso.8 = lasso.8,
+                      Lasso.7=lasso.7,
+                      Lasso.Full=lasso.full,
+                      Lasso.Full.NoPCA= lasso.full.nopca,
+                      PLS.Full=pls.full,
+                      PLS.7=pls.7,
+                      PLS.8=pls.8,
+                      PLS.85=pls.85))
+summary(resamples)
+
+summary(diff(resamples))
+
+bwplot((resamples),metric = "RMSE", main="Comparing RMSE Log Earnings Resamples for Each Model")
+
+bwplot((resamples),metric = "MAE", main="Comparing MAE Log Earnings Resamples for Each Model", color="Green")
+
+bwplot((resamples),metric = "Rsquared", main="Comparing Rsquared Log Earnings Resamples for Each Model", color="Green")
+```
